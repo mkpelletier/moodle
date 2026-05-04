@@ -265,7 +265,12 @@ class address_manager {
             self::pack_int($this->datavalue),
             pack('H*', substr(md5($this->fetch_data_key() . $userkey), 0, self::HASHSIZE)),
         );
-        $subaddress = base64_encode(implode($data));
+        // Use the base64url alphabet (RFC 4648 §5) without padding so the subaddress contains
+        // only characters accepted by RFC 5321 mailbox local-parts. The standard base64
+        // characters '+', '/' and '=' are rejected or rewritten by some MTAs (notably AWS
+        // WorkMail), causing reply-by-email to fail. process() decodes both forms so
+        // addresses generated before this change continue to work.
+        $subaddress = rtrim(strtr(base64_encode(implode($data)), '+/', '-_'), '=');
 
         return $CFG->messageinbound_mailbox . '+' . $subaddress . '@' . $CFG->messageinbound_domain;
     }
@@ -303,7 +308,13 @@ class address_manager {
 
         list($localpart) = explode('@', $address, 2);
         list($record->mailbox, $encodeddata) = explode('+', $localpart, 2);
-        $data = base64_decode($encodeddata, true);
+        // Accept both base64url (current generate() output, no padding) and the legacy
+        // base64 form (with '+', '/' and '=' padding) emitted by older Moodle versions.
+        // strtr is a no-op for legacy strings, and re-padding is a no-op for already-padded
+        // strings, so a single decode path covers both.
+        $standard = strtr($encodeddata, '-_', '+/');
+        $padded = $standard . str_repeat('=', (4 - strlen($standard) % 4) % 4);
+        $data = base64_decode($padded, true);
         if (!$data) {
             // This address has no valid data.
             return;
